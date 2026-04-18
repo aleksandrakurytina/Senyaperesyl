@@ -14,9 +14,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Хранилище авторов постов
-post_authors = {}
-
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Пересылка всех сообщений из группы в канал с 3 кнопками"""
     
@@ -43,44 +40,52 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         
         # Создаем клавиатуру с 3 кнопками
-        keyboard = [
-            # Первая кнопка - большая (занимает всю ширину)
-            [InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", callback_data=f"take_task_{author.id if author else 'unknown'}")],
-            # Вторая строка - две маленькие кнопки
-            [
-                InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
-                InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
-            ]
-        ]
+        keyboard = []
+        
+        # Первая кнопка - ссылка на ЛС автора (если есть username)
+        if author and author.username:
+            keyboard.append([InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", url=f"https://t.me/{author.username}")])
+        else:
+            # Если нет username - показываем ID
+            keyboard.append([InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", callback_data="no_username")])
+        
+        # Вторая строка - две маленькие кнопки
+        keyboard.append([
+            InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
+            InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
+        ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Добавляем в сообщение username автора для удобства
+        author_text = f"\n\n👤 Автор: @{author.username}" if author and author.username else f"\n\n👤 Автор: {author.full_name} (нет username)"
+        
         # Отправляем сообщение в канал
         if message.text:
-            sent_message = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=TARGET_CHANNEL_ID,
-                text=message_text,
+                text=message_text + author_text,
                 reply_markup=reply_markup
             )
         elif message.photo:
-            sent_message = await context.bot.send_photo(
+            await context.bot.send_photo(
                 chat_id=TARGET_CHANNEL_ID,
                 photo=message.photo[-1].file_id,
-                caption=message_text if message_text else None,
+                caption=(message_text if message_text else "") + author_text,
                 reply_markup=reply_markup
             )
         elif message.document:
-            sent_message = await context.bot.send_document(
+            await context.bot.send_document(
                 chat_id=TARGET_CHANNEL_ID,
                 document=message.document.file_id,
-                caption=message_text if message_text else None,
+                caption=(message_text if message_text else "") + author_text,
                 reply_markup=reply_markup
             )
         elif message.video:
-            sent_message = await context.bot.send_video(
+            await context.bot.send_video(
                 chat_id=TARGET_CHANNEL_ID,
                 video=message.video.file_id,
-                caption=message_text if message_text else None,
+                caption=(message_text if message_text else "") + author_text,
                 reply_markup=reply_markup
             )
         else:
@@ -89,14 +94,6 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 text="❌ Неподдерживаемый тип сообщения."
             )
             return
-        
-        # Сохраняем информацию об авторе
-        if author:
-            post_authors[sent_message.message_id] = {
-                'user_id': author.id,
-                'username': author.username,
-                'full_name': author.full_name
-            }
         
         # Отправляем подтверждение в группу
         await context.bot.send_message(
@@ -114,56 +111,16 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на кнопку 'ВЗЯТЬ ЗАДАНИЕ'"""
+    """Обработка нажатия, если нет username"""
     query = update.callback_query
-    user = query.from_user
-    message = query.message
-    
-    try:
-        data = query.data
-        
-        if data.startswith('take_task_'):
-            await query.answer("⏳ Отправка...")
-            
-            # Получаем ID автора
-            parts = data.split('_')
-            if len(parts) < 3 or parts[2] == 'unknown':
-                await query.answer("❌ Не удалось определить автора", show_alert=True)
-                return
-            
-            author_id = int(parts[2])
-            
-            # Текст для автора
-            user_message = (
-                f"✅ НОВЫЙ ОТКЛИК!\n\n"
-                f"📝 Задание: {message.text or message.caption or 'Медиафайл'}\n\n"
-                f"👤 Откликнулся: {user.full_name}"
-            )
-            if user.username:
-                user_message += f" (@{user.username})"
-            user_message += f"\n🆔 ID: {user.id}"
-            
-            # Отправляем автору
-            try:
-                await context.bot.send_message(
-                    chat_id=author_id,
-                    text=user_message
-                )
-                await query.answer("✅ Отклик отправлен автору!", show_alert=True)
-                logger.info(f"Отклик от {user.id} -> автору {author_id}")
-            except Exception as e:
-                await query.answer("❌ Автор запретил сообщения", show_alert=True)
-                
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await query.answer("❌ Ошибка", show_alert=True)
+    await query.answer("❌ У автора нет username, напишите ему в ЛС по ID", show_alert=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     await update.message.reply_text(
         "🤖 БОТ ЗАПУЩЕН\n\n"
         "Все сообщения из группы автоматически пересылаются в канал с кнопками:\n"
-        "• ВЗЯТЬ ЗАДАНИЕ - отклик автору\n"
+        "• ВЗЯТЬ ЗАДАНИЕ - открывает ЛС с автором\n"
         "• ВЫПЛАТЫ - канал @milkywaypayments\n"
         "• ОБУЧЕНИЕ - канал @MilkywayObuchenie"
     )
@@ -183,18 +140,14 @@ def main():
         )
     )
     
-    # Обработчик кнопок
-    application.add_handler(CallbackQueryHandler(button_callback))
+    # Обработчик для случая, если нет username
+    application.add_handler(CallbackQueryHandler(button_callback, pattern="no_username"))
     
     print(f"🚀 БОТ ЗАПУЩЕН")
     print(f"📁 Группа: {SOURCE_GROUP_ID}")
     print(f"📢 Канал: {TARGET_CHANNEL_ID}")
-    print(f"💬 Все сообщения автоматически пересылаются в канал")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
 
 if __name__ == '__main__':
     main()
