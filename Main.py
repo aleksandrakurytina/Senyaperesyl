@@ -11,29 +11,19 @@ TARGET_CHANNEL_ID = -1003819262906
 logging.basicConfig(level=logging.INFO)
 
 def extract_info(text):
-    """Извлекает платформу, оплату и описание из текста"""
+    """Извлекает платформу и оплату"""
     platform = ""
     payment = ""
-    description = ""
     
-    # Ищем платформу
     platform_match = re.search(r'➤ Платформа:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if platform_match:
         platform = platform_match.group(1).strip()
     
-    # Ищем оплату
     payment_match = re.search(r'➤ Оплата:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if payment_match:
         payment = payment_match.group(1).strip()
     
-    # Ищем описание
-    desc_match = re.search(r'➤ Описание[ -]?\s*(.+?)(?:\n@|\n$|$)', text, re.IGNORECASE | re.DOTALL)
-    if desc_match:
-        description = desc_match.group(1).strip()
-        # Обрезаем если есть username в конце
-        description = re.sub(r'\s*@\w+$', '', description)
-    
-    return platform, payment, description
+    return platform, payment
 
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != str(SOURCE_GROUP_ID):
@@ -46,14 +36,11 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     author = update.effective_user
     message_text = msg.text or msg.caption or ""
     
-    # Извлекаем информацию
-    platform, payment, description = extract_info(message_text)
+    # Извлекаем платформу и оплату
+    platform, payment = extract_info(message_text)
     
     # Формируем текст для ЛС
     prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
-    if description:
-        prefill_text += f"\n\nОписание: {description[:200]}"
-    
     prefill = quote(prefill_text)
     
     # Ссылка на ЛС автора
@@ -80,27 +67,17 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_photo(chat_id=TARGET_CHANNEL_ID, photo=msg.photo[-1].file_id, caption=message_text, reply_markup=reply_markup)
     elif msg.video:
         await context.bot.send_video(chat_id=TARGET_CHANNEL_ID, video=msg.video.file_id, caption=message_text, reply_markup=reply_markup)
-    elif msg.document:
-        await context.bot.send_document(chat_id=TARGET_CHANNEL_ID, document=msg.document.file_id, caption=message_text, reply_markup=reply_markup)
     
     await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text="✅ Отправлено в канал")
-    logging.info(f"Переслано: платформа={platform}, оплата={payment}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Бот запущен!\n\n"
-        "Отправляйте сообщения в формате:\n"
-        "➤ Платформа: Telegram\n"
-        "➤ Оплата: 500₽\n"
-        "➤ Описание - текст\n"
-        "@username"
-    )
+    await update.message.reply_text("🤖 Бот запущен")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(
-        filters.Chat(SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL), 
+        filters.Chat(SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
         forward_to_channel
     ))
     
