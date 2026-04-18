@@ -1,4 +1,5 @@
 import logging
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from urllib.parse import quote
@@ -8,6 +9,31 @@ SOURCE_GROUP_ID = -1003968893490
 TARGET_CHANNEL_ID = -1003819262906
 
 logging.basicConfig(level=logging.INFO)
+
+def extract_info(text):
+    """Извлекает платформу, оплату и описание из текста"""
+    platform = ""
+    payment = ""
+    description = ""
+    
+    # Ищем платформу
+    platform_match = re.search(r'➤ Платформа:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if platform_match:
+        platform = platform_match.group(1).strip()
+    
+    # Ищем оплату
+    payment_match = re.search(r'➤ Оплата:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if payment_match:
+        payment = payment_match.group(1).strip()
+    
+    # Ищем описание
+    desc_match = re.search(r'➤ Описание[ -]?\s*(.+?)(?:\n@|\n$|$)', text, re.IGNORECASE | re.DOTALL)
+    if desc_match:
+        description = desc_match.group(1).strip()
+        # Обрезаем если есть username в конце
+        description = re.sub(r'\s*@\w+$', '', description)
+    
+    return platform, payment, description
 
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != str(SOURCE_GROUP_ID):
@@ -20,21 +46,28 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     author = update.effective_user
     message_text = msg.text or msg.caption or ""
     
-    # Текст который подставится в поле ввода
-    prefill = quote(f"Здравствуйте, я из канала MilkyWay за заданием")
+    # Извлекаем информацию
+    platform, payment, description = extract_info(message_text)
     
-    # Ссылка на ЛС автора с готовым текстом
-    if author.username:
+    # Формируем текст для ЛС
+    prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
+    if description:
+        prefill_text += f"\n\nОписание: {description[:200]}"
+    
+    prefill = quote(prefill_text)
+    
+    # Ссылка на ЛС автора
+    if author and author.username:
         respond_url = f"https://t.me/{author.username}?text={prefill}"
     else:
         respond_url = f"https://t.me/{BOT_TOKEN.split(':')[0]}?text={prefill}"
     
     # Кнопки
     keyboard = [
-        [InlineKeyboardButton("📋 Взять задание", url=respond_url)],  # Большая кнопка
+        [InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", url=respond_url)],
         [
-            InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
-            InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+            InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
+            InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
         ]
     ]
     
@@ -51,9 +84,17 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_document(chat_id=TARGET_CHANNEL_ID, document=msg.document.file_id, caption=message_text, reply_markup=reply_markup)
     
     await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text="✅ Отправлено в канал")
+    logging.info(f"Переслано: платформа={platform}, оплата={payment}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот запущен!\n\nВсе сообщения из группы будут пересылаться в канал с кнопками:\n• Взять задание (с готовым текстом)\n• Выплаты\n• Обучение")
+    await update.message.reply_text(
+        "🤖 Бот запущен!\n\n"
+        "Отправляйте сообщения в формате:\n"
+        "➤ Платформа: Telegram\n"
+        "➤ Оплата: 500₽\n"
+        "➤ Описание - текст\n"
+        "@username"
+    )
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
