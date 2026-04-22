@@ -15,9 +15,6 @@ POST_LIFETIME_SECONDS = 3600
 
 logging.basicConfig(level=logging.INFO)
 
-# Хранилище задач на закрытие
-scheduled_tasks = {}
-
 def extract_info(text):
     """Извлекает платформу и оплату"""
     platform = ""
@@ -33,14 +30,18 @@ def extract_info(text):
     
     return platform, payment
 
-async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, original_text: str = None):
+async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
     """Закрывает пост через час"""
+    job_data = context.job.data
+    chat_id = job_data['chat_id']
+    message_id = job_data['message_id']
+    
     try:
         # Кнопки для закрытого поста
         closed_keyboard = [
             [
-                InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
-                InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+                InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
+                InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
             ]
         ]
         
@@ -77,7 +78,7 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     platform, payment = extract_info(message_text)
     
     # Формируем текст для ЛС
-    prefill_text = f"Здравствуйте, я из канала MilkyWay, за заданием {platform} за {payment}₽"
+    prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
     prefill = quote(prefill_text)
     
     # Ссылка на ЛС автора
@@ -88,10 +89,10 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Кнопки для активного поста
     keyboard = [
-        [InlineKeyboardButton("📋 Взять задание", url=respond_url)],
+        [InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", url=respond_url)],
         [
-            InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
-            InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+            InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
+            InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
         ]
     ]
     
@@ -111,18 +112,11 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if sent_message:
         # Планируем закрытие поста через час
-        job = context.job_queue.run_once(
-            lambda ctx: close_post_after_hour(
-                ctx, 
-                TARGET_CHANNEL_ID, 
-                sent_message.message_id,
-                message_text
-            ),
-            when=POST_LIFETIME_SECONDS
+        context.job_queue.run_once(
+            close_post_after_hour,
+            when=POST_LIFETIME_SECONDS,
+            data={'chat_id': TARGET_CHANNEL_ID, 'message_id': sent_message.message_id}
         )
-        
-        # Сохраняем информацию о задаче
-        scheduled_tasks[sent_message.message_id] = job
         
         await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час")
         logging.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
@@ -134,20 +128,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Создаем приложение с job_queue
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем job_queue для планирования задач
-    app.job_queue = app.job_queue
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(
         filters.Chat(SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
         forward_to_channel
     ))
     
     print("🚀 Бот запущен")
     print("⏰ Посты будут автоматически закрываться через 1 час")
-    app.run_polling()
+    
+    # Запускаем бота
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
