@@ -8,11 +8,11 @@ BOT_TOKEN = '8556771866:AAFXI0DCV1QcIK0Rva0U3DczhYb2v1yzR9k'
 SOURCE_GROUP_ID = -1003968893490
 TARGET_CHANNEL_ID = -1003819262906
 
-# Время жизни поста в секундах (1 час = 3600 секунд)
-POST_LIFETIME_SECONDS = 3600
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Хранилище постов: {message_id: {'chat_id': channel_id, 'author_id': user_id}}
+active_posts = {}
 
 def extract_info(text):
     """Извлекает платформу и оплату"""
@@ -29,34 +29,96 @@ def extract_info(text):
 
     return platform, payment
 
-async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
-    """Закрывает пост через час"""
-    job_data = context.job.data
-    chat_id = job_data['chat_id']
-    message_id = job_data['message_id']
+async def close_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает пост по команде /close"""
+    # Команда должна быть в группе отправителя
+    if update.effective_chat.id != SOURCE_GROUP_ID:
+        await update.message.reply_text("❌ Эта команда работает только в группе для постов")
+        return
 
-    try:
-        closed_keyboard = [
-            [
-                InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
-                InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+    # Проверяем, есть ли активные посты у этого пользователя
+    user_id = update.effective_user.id
+    user_posts = [msg_id for msg_id, data in active_posts.items() if data['author_id'] == user_id]
+    
+    if not user_posts:
+        await update.message.reply_text("❌ У вас нет активных постов для закрытия")
+        return
+
+    closed_count = 0
+    for message_id in user_posts:
+        post_data = active_posts[message_id]
+        
+        try:
+            # Кнопки для закрытого поста
+            closed_keyboard = [
+                [
+                    InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
+                    InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+                ]
             ]
-        ]
+            closed_markup = InlineKeyboardMarkup(closed_keyboard)
+            closed_text = "🔒 Набор закрыт, ожидайте следующие задания ❗️"
 
-        closed_markup = InlineKeyboardMarkup(closed_keyboard)
-        closed_text = "🔒 Набор закрыт, ожидайте следующие задания ❗️"
+            # Редактируем пост в канале
+            await context.bot.edit_message_text(
+                chat_id=post_data['chat_id'],
+                message_id=message_id,
+                text=closed_text,
+                reply_markup=closed_markup
+            )
+            
+            # Удаляем из активных постов
+            del active_posts[message_id]
+            closed_count += 1
+            logger.info(f"Пост {message_id} закрыт пользователем {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии поста {message_id}: {e}")
+            await update.message.reply_text(f"❌ Ошибка при закрытии поста: {e}")
 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=closed_text,
-            reply_markup=closed_markup
-        )
+    if closed_count > 0:
+        await update.message.reply_text(f"✅ Закрыто постов: {closed_count}")
 
-        logger.info(f"Пост {message_id} закрыт через час")
+async def close_all_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает все посты (только для админов)"""
+    if update.effective_chat.id != SOURCE_GROUP_ID:
+        return
+    
+    # Проверка на админа (опционально)
+    # if update.effective_user.id not in ADMIN_IDS:
+    #     await update.message.reply_text("❌ Только для админов")
+    #     return
+    
+    if not active_posts:
+        await update.message.reply_text("❌ Нет активных постов")
+        return
 
-    except Exception as e:
-        logger.error(f"Ошибка при закрытии поста {message_id}: {e}")
+    closed_count = 0
+    for message_id, post_data in list(active_posts.items()):
+        try:
+            closed_keyboard = [
+                [
+                    InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
+                    InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+                ]
+            ]
+            closed_markup = InlineKeyboardMarkup(closed_keyboard)
+            closed_text = "🔒 Все наборы закрыты ❗️"
+
+            await context.bot.edit_message_text(
+                chat_id=post_data['chat_id'],
+                message_id=message_id,
+                text=closed_text,
+                reply_markup=closed_markup
+            )
+            
+            del active_posts[message_id]
+            closed_count += 1
+            
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии поста {message_id}: {e}")
+
+    await update.message.reply_text(f"✅ Закрыто постов: {closed_count}")
 
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Пересылает сообщение из группы в канал"""
@@ -128,25 +190,21 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
-        if sent_message and context.job_queue:
-            # Планируем закрытие поста через час
-            context.job_queue.run_once(
-                close_post_after_hour,
-                POST_LIFETIME_SECONDS,
-                data={'chat_id': TARGET_CHANNEL_ID, 'message_id': sent_message.message_id}
-            )
+        if sent_message:
+            # Сохраняем пост в активные
+            active_posts[sent_message.message_id] = {
+                'chat_id': TARGET_CHANNEL_ID,
+                'author_id': author.id,
+                'author_name': author.first_name
+            }
 
             await context.bot.send_message(
                 chat_id=SOURCE_GROUP_ID, 
-                text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час"
+                text=f"✅ Отправлено в канал\n\n"
+                     f"📌 Чтобы закрыть набор, напишите /close\n"
+                     f"🔒 Пост закроется для новых откликов"
             )
-            logger.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
-        elif sent_message:
-            logger.warning("JobQueue не доступен, пост не будет автоматически закрыт")
-            await context.bot.send_message(
-                chat_id=SOURCE_GROUP_ID, 
-                text="✅ Отправлено в канал\n⚠️ Автоматическое закрытие не работает"
-            )
+            logger.info(f"Пост {sent_message.message_id} отправлен пользователем {author.id}")
             
     except Exception as e:
         logger.error(f"Ошибка в forward_to_channel: {e}")
@@ -155,32 +213,46 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text=f"❌ Ошибка: {str(e)[:100]}"
         )
 
+async def show_my_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает активные посты пользователя"""
+    if update.effective_chat.id != SOURCE_GROUP_ID:
+        return
+    
+    user_id = update.effective_user.id
+    user_posts = [msg_id for msg_id, data in active_posts.items() if data['author_id'] == user_id]
+    
+    if not user_posts:
+        await update.message.reply_text("📭 У вас нет активных постов")
+    else:
+        await update.message.reply_text(
+            f"📊 Ваши активные посты: {len(user_posts)}\n\n"
+            f"Чтобы закрыть пост, используйте команду /close"
+        )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
-        "🤖 Бот запущен\n\n"
-        "Все посты автоматически закрываются через 1 час после публикации."
+        "🤖 Бот для публикации заданий\n\n"
+        "📝 Как использовать:\n"
+        "1. Отправьте пост в группу\n"
+        "2. Бот автоматически опубликует его в канале\n"
+        "3. Когда набор завершится, напишите /close\n\n"
+        "📌 Доступные команды:\n"
+        "/close - закрыть ваш последний пост\n"
+        "/myposts - показать ваши активные посты\n"
+        "/close_all - закрыть все посты (админ)"
     )
 
 def main():
     """Запуск бота"""
     try:
-        # Создаем приложение и сразу запускаем job_queue
-        application = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .build()
-        )
-        
-        # Инициализируем job_queue
-        if not application.job_queue:
-            from telegram.ext import JobQueue
-            application.job_queue = JobQueue()
-            application.job_queue.set_application(application)
-            application.job_queue.start()
+        application = Application.builder().token(BOT_TOKEN).build()
         
         # Добавляем обработчики
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("close", close_post))
+        application.add_handler(CommandHandler("myposts", show_my_posts))
+        application.add_handler(CommandHandler("close_all", close_all_posts))
         application.add_handler(MessageHandler(
             filters.Chat(chat_id=SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
             forward_to_channel
@@ -189,9 +261,11 @@ def main():
         print("🚀 Бот запущен")
         print(f"📢 Отслеживается группа: {SOURCE_GROUP_ID}")
         print(f"📤 Посты отправляются в канал: {TARGET_CHANNEL_ID}")
-        print("⏰ Посты будут автоматически закрываться через 1 час")
+        print("\n📌 Команды:")
+        print("  /close - закрыть свой пост")
+        print("  /myposts - показать свои посты")
+        print("  /close_all - закрыть все посты")
         
-        # Запускаем бота
         application.run_polling()
         
     except Exception as e:
