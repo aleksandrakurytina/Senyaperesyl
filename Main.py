@@ -128,7 +128,7 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
-        if sent_message:
+        if sent_message and context.job_queue:
             # Планируем закрытие поста через час
             context.job_queue.run_once(
                 close_post_after_hour,
@@ -141,6 +141,12 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час"
             )
             logger.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
+        elif sent_message:
+            logger.warning("JobQueue не доступен, пост не будет автоматически закрыт")
+            await context.bot.send_message(
+                chat_id=SOURCE_GROUP_ID, 
+                text="✅ Отправлено в канал\n⚠️ Автоматическое закрытие не работает"
+            )
             
     except Exception as e:
         logger.error(f"Ошибка в forward_to_channel: {e}")
@@ -159,8 +165,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск бота"""
     try:
-        # Создаем приложение
-        application = Application.builder().token(BOT_TOKEN).build()
+        # Создаем приложение и сразу запускаем job_queue
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .build()
+        )
+        
+        # Инициализируем job_queue
+        if not application.job_queue:
+            from telegram.ext import JobQueue
+            application.job_queue = JobQueue()
+            application.job_queue.set_application(application)
+            application.job_queue.start()
         
         # Добавляем обработчики
         application.add_handler(CommandHandler("start", start))
