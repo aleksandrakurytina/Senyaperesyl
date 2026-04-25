@@ -19,15 +19,15 @@ def extract_info(text):
     """Извлекает платформу и оплату"""
     platform = ""
     payment = ""
-    
+
     platform_match = re.search(r'➤ Платформа:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if platform_match:
         platform = platform_match.group(1).strip()
-    
+
     payment_match = re.search(r'➤ Оплата:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if payment_match:
         payment = payment_match.group(1).strip()
-    
+
     return platform, payment
 
 async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
@@ -35,21 +35,21 @@ async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id = job_data['chat_id']
     message_id = job_data['message_id']
-    
+
     try:
-        # Кнопки для закрытого поста
+        # Кнопки для закрытого поста (обычный текст, не капс)
         closed_keyboard = [
             [
-                InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
-                InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
+                InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
+                InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
             ]
         ]
-        
+
         closed_markup = InlineKeyboardMarkup(closed_keyboard)
-        
+
         # Текст закрытого поста
         closed_text = "🔒 Набор закрыт, ожидайте следующие задания ❗️"
-        
+
         # Редактируем сообщение
         await context.bot.edit_message_text(
             chat_id=chat_id,
@@ -57,59 +57,86 @@ async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
             text=closed_text,
             reply_markup=closed_markup
         )
-        
+
         logging.info(f"Пост {message_id} закрыт через час")
-        
+
     except Exception as e:
         logging.error(f"Ошибка при закрытии поста {message_id}: {e}")
 
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != str(SOURCE_GROUP_ID):
+    # Проверяем, что сообщение из исходной группы
+    if update.effective_chat.id != SOURCE_GROUP_ID:
         return
-    
+
+    # Игнорируем сообщения от самого бота
     if update.effective_user and update.effective_user.id == context.bot.id:
         return
-    
+
     msg = update.effective_message
     author = update.effective_user
     message_text = msg.text or msg.caption or ""
-    
+
     # Извлекаем платформу и оплату
     platform, payment = extract_info(message_text)
-    
+
     # Формируем текст для ЛС
     prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
     prefill = quote(prefill_text)
-    
+
     # Ссылка на ЛС автора
     if author and author.username:
         respond_url = f"https://t.me/{author.username}?text={prefill}"
     else:
         respond_url = f"https://t.me/{BOT_TOKEN.split(':')[0]}?text={prefill}"
-    
-    # Кнопки для активного поста
+
+    # Кнопки для активного поста (обычный текст, не капс)
     keyboard = [
-        [InlineKeyboardButton("📋 ВЗЯТЬ ЗАДАНИЕ", url=respond_url)],
+        [InlineKeyboardButton("📋 Взять задание", url=respond_url)],
         [
-            InlineKeyboardButton("💳 ВЫПЛАТЫ", url="https://t.me/milkywaypayments"),
-            InlineKeyboardButton("📚 ОБУЧЕНИЕ", url="https://t.me/MilkywayObuchenie")
+            InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
+            InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
         ]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     # Отправляем в канал
     sent_message = None
-    if msg.text:
-        sent_message = await context.bot.send_message(chat_id=TARGET_CHANNEL_ID, text=message_text, reply_markup=reply_markup)
-    elif msg.photo:
-        sent_message = await context.bot.send_photo(chat_id=TARGET_CHANNEL_ID, photo=msg.photo[-1].file_id, caption=message_text, reply_markup=reply_markup)
-    elif msg.video:
-        sent_message = await context.bot.send_video(chat_id=TARGET_CHANNEL_ID, video=msg.video.file_id, caption=message_text, reply_markup=reply_markup)
-    else:
-        await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text="❌ Неподдерживаемый тип файла")
+    try:
+        if msg.text:
+            sent_message = await context.bot.send_message(
+                chat_id=TARGET_CHANNEL_ID, 
+                text=message_text, 
+                reply_markup=reply_markup
+            )
+        elif msg.photo:
+            sent_message = await context.bot.send_photo(
+                chat_id=TARGET_CHANNEL_ID, 
+                photo=msg.photo[-1].file_id, 
+                caption=message_text, 
+                reply_markup=reply_markup
+            )
+        elif msg.video:
+            sent_message = await context.bot.send_video(
+                chat_id=TARGET_CHANNEL_ID, 
+                video=msg.video.file_id, 
+                caption=message_text, 
+                reply_markup=reply_markup
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=SOURCE_GROUP_ID, 
+                text="❌ Неподдерживаемый тип файла"
+            )
+            return
+    except Exception as e:
+        logging.error(f"Ошибка отправки в канал: {e}")
+        await context.bot.send_message(
+            chat_id=SOURCE_GROUP_ID, 
+            text=f"❌ Ошибка отправки: {e}"
+        )
         return
-    
+
     if sent_message:
         # Планируем закрытие поста через час
         context.job_queue.run_once(
@@ -117,8 +144,11 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             when=POST_LIFETIME_SECONDS,
             data={'chat_id': TARGET_CHANNEL_ID, 'message_id': sent_message.message_id}
         )
-        
-        await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час")
+
+        await context.bot.send_message(
+            chat_id=SOURCE_GROUP_ID, 
+            text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час"
+        )
         logging.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,19 +158,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    # Создаем приложение с job_queue
+    # Создаем приложение с явным указанием job_queue
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Явно запускаем job_queue (иногда требуется)
+    application.job_queue.start()
+
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(
-        filters.Chat(SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
+        filters.Chat(chat_id=SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
         forward_to_channel
     ))
-    
+
     print("🚀 Бот запущен")
     print("⏰ Посты будут автоматически закрываться через 1 час")
-    
+
     # Запускаем бота
     application.run_polling()
 
