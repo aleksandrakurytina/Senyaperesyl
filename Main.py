@@ -1,7 +1,5 @@
 import logging
 import re
-import asyncio
-from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from urllib.parse import quote
@@ -14,6 +12,7 @@ TARGET_CHANNEL_ID = -1003819262906
 POST_LIFETIME_SECONDS = 3600
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def extract_info(text):
     """Извлекает платформу и оплату"""
@@ -37,7 +36,6 @@ async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
     message_id = job_data['message_id']
 
     try:
-        # Кнопки для закрытого поста (обычный текст, не капс)
         closed_keyboard = [
             [
                 InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
@@ -46,11 +44,8 @@ async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
         ]
 
         closed_markup = InlineKeyboardMarkup(closed_keyboard)
-
-        # Текст закрытого поста
         closed_text = "🔒 Набор закрыт, ожидайте следующие задания ❗️"
 
-        # Редактируем сообщение
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -58,51 +53,54 @@ async def close_post_after_hour(context: ContextTypes.DEFAULT_TYPE):
             reply_markup=closed_markup
         )
 
-        logging.info(f"Пост {message_id} закрыт через час")
+        logger.info(f"Пост {message_id} закрыт через час")
 
     except Exception as e:
-        logging.error(f"Ошибка при закрытии поста {message_id}: {e}")
+        logger.error(f"Ошибка при закрытии поста {message_id}: {e}")
 
 async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем, что сообщение из исходной группы
-    if update.effective_chat.id != SOURCE_GROUP_ID:
-        return
-
-    # Игнорируем сообщения от самого бота
-    if update.effective_user and update.effective_user.id == context.bot.id:
-        return
-
-    msg = update.effective_message
-    author = update.effective_user
-    message_text = msg.text or msg.caption or ""
-
-    # Извлекаем платформу и оплату
-    platform, payment = extract_info(message_text)
-
-    # Формируем текст для ЛС
-    prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
-    prefill = quote(prefill_text)
-
-    # Ссылка на ЛС автора
-    if author and author.username:
-        respond_url = f"https://t.me/{author.username}?text={prefill}"
-    else:
-        respond_url = f"https://t.me/{BOT_TOKEN.split(':')[0]}?text={prefill}"
-
-    # Кнопки для активного поста (обычный текст, не капс)
-    keyboard = [
-        [InlineKeyboardButton("📋 Взять задание", url=respond_url)],
-        [
-            InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
-            InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
-        ]
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Отправляем в канал
-    sent_message = None
+    """Пересылает сообщение из группы в канал"""
     try:
+        # Проверяем, что сообщение из исходной группы
+        if update.effective_chat.id != SOURCE_GROUP_ID:
+            return
+
+        # Игнорируем сообщения от самого бота
+        if update.effective_user and update.effective_user.id == context.bot.id:
+            return
+
+        msg = update.effective_message
+        if not msg:
+            return
+            
+        author = update.effective_user
+        message_text = msg.text or msg.caption or ""
+
+        # Извлекаем платформу и оплату
+        platform, payment = extract_info(message_text)
+
+        # Формируем текст для ЛС
+        prefill_text = f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽"
+        prefill = quote(prefill_text)
+
+        # Ссылка на ЛС автора
+        if author and author.username:
+            respond_url = f"https://t.me/{author.username}?text={prefill}"
+        else:
+            respond_url = f"https://t.me/{BOT_TOKEN.split(':')[0]}?text={prefill}"
+
+        # Кнопки для активного поста
+        keyboard = [
+            [InlineKeyboardButton("📋 Взять задание", url=respond_url)],
+            [
+                InlineKeyboardButton("💳 Выплаты", url="https://t.me/milkywaypayments"),
+                InlineKeyboardButton("📚 Обучение", url="https://t.me/MilkywayObuchenie")
+            ]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Отправляем в канал
         if msg.text:
             sent_message = await context.bot.send_message(
                 chat_id=TARGET_CHANNEL_ID, 
@@ -129,53 +127,59 @@ async def forward_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 text="❌ Неподдерживаемый тип файла"
             )
             return
+
+        if sent_message:
+            # Планируем закрытие поста через час
+            context.job_queue.run_once(
+                close_post_after_hour,
+                POST_LIFETIME_SECONDS,
+                data={'chat_id': TARGET_CHANNEL_ID, 'message_id': sent_message.message_id}
+            )
+
+            await context.bot.send_message(
+                chat_id=SOURCE_GROUP_ID, 
+                text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час"
+            )
+            logger.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
+            
     except Exception as e:
-        logging.error(f"Ошибка отправки в канал: {e}")
+        logger.error(f"Ошибка в forward_to_channel: {e}")
         await context.bot.send_message(
             chat_id=SOURCE_GROUP_ID, 
-            text=f"❌ Ошибка отправки: {e}"
+            text=f"❌ Ошибка: {str(e)[:100]}"
         )
-        return
-
-    if sent_message:
-        # Планируем закрытие поста через час
-        context.job_queue.run_once(
-            close_post_after_hour,
-            when=POST_LIFETIME_SECONDS,
-            data={'chat_id': TARGET_CHANNEL_ID, 'message_id': sent_message.message_id}
-        )
-
-        await context.bot.send_message(
-            chat_id=SOURCE_GROUP_ID, 
-            text="✅ Отправлено в канал\n⏰ Пост автоматически закроется через 1 час"
-        )
-        logging.info(f"Пост {sent_message.message_id} отправлен, закроется через час")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
     await update.message.reply_text(
         "🤖 Бот запущен\n\n"
         "Все посты автоматически закрываются через 1 час после публикации."
     )
 
 def main():
-    # Создаем приложение с явным указанием job_queue
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Явно запускаем job_queue (иногда требуется)
-    application.job_queue.start()
-
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(
-        filters.Chat(chat_id=SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
-        forward_to_channel
-    ))
-
-    print("🚀 Бот запущен")
-    print("⏰ Посты будут автоматически закрываться через 1 час")
-
-    # Запускаем бота
-    application.run_polling()
+    """Запуск бота"""
+    try:
+        # Создаем приложение
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Добавляем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(
+            filters.Chat(chat_id=SOURCE_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO), 
+            forward_to_channel
+        ))
+        
+        print("🚀 Бот запущен")
+        print(f"📢 Отслеживается группа: {SOURCE_GROUP_ID}")
+        print(f"📤 Посты отправляются в канал: {TARGET_CHANNEL_ID}")
+        print("⏰ Посты будут автоматически закрываться через 1 час")
+        
+        # Запускаем бота
+        application.run_polling()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
+        print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
     main()
